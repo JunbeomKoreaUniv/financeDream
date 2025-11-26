@@ -4,15 +4,9 @@ on:
   push:
     branches:
       - main
-  pull_request:
-    branches:
-      - main
-    types: [closed]
 
 jobs:
   deploy:
-    # PR이 merge되었을 때만 실행
-    if: github.event_name == 'push' || (github.event.pull_request.merged == true)
     runs-on: ubuntu-latest
 
     steps:
@@ -33,93 +27,96 @@ jobs:
       - name: 📦 JAR 파일 확인
         run: ls -lh build/libs/
 
+      - name: 🔑 SSH Key 설정
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H ${{ secrets.EC2_HOST }} >> ~/.ssh/known_hosts
+
       - name: 🚀 EC2 배포
-        uses: appleboy/ssh-action@v1.0.0
-        with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ${{ secrets.EC2_USER }}
-          key: ${{ secrets.EC2_SSH_KEY }}
-          script: |
+        run: |
+          ssh -i ~/.ssh/id_rsa ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'ENDSSH'
+            set -e
+          
             echo "========================================="
             echo "🚀 EC2 서버 배포 시작"
             echo "========================================="
-            
+          
             PROJECT_DIR="/home/ubuntu/financeDream"
             JAR_NAME="demo-0.0.1-SNAPSHOT.jar"
-            
-            # 프로젝트 디렉토리로 이동
+          
             cd $PROJECT_DIR
-            
-            # Git Pull
+          
             echo "🔄 Git Pull..."
             git pull origin main
-            
-            # 기존 프로세스 종료
+          
             echo "🔍 기존 프로세스 확인..."
             CURRENT_PID=$(ps -ef | grep "$JAR_NAME" | grep -v grep | awk '{print $2}')
-            
+          
             if [ ! -z "$CURRENT_PID" ]; then
               echo "🛑 기존 프로세스 종료 중... (PID: $CURRENT_PID)"
               kill -15 $CURRENT_PID
               sleep 5
-            
+          
               if ps -p $CURRENT_PID > /dev/null; then
                 echo "⚠️  강제 종료..."
                 kill -9 $CURRENT_PID
                 sleep 2
               fi
             fi
-            
-            # 빌드
+          
             echo "🔨 빌드 시작..."
             ./gradlew clean build -x test
-            
-            # 애플리케이션 실행
+          
             echo "🚀 애플리케이션 시작..."
-            
+          
             DB_URL="jdbc:mysql://${{ secrets.MYSQL_HOST }}:${{ secrets.MYSQL_PORT }}/${{ secrets.MYSQL_DB }}?serverTimezone=Asia/Seoul&characterEncoding=UTF-8"
-            
+          
             nohup java -jar \
               -Dspring.datasource.url="${DB_URL}" \
               -Dspring.datasource.username="${{ secrets.MYSQL_USER }}" \
               -Dspring.datasource.password="${{ secrets.MYSQL_PASSWORD }}" \
               -Djwt.secret="${{ secrets.JWT_SECRET_KEY }}" \
               build/libs/$JAR_NAME > app.log 2>&1 &
-            
+          
             sleep 5
-            
-            # 실행 확인
+          
             NEW_PID=$(ps -ef | grep "$JAR_NAME" | grep -v grep | awk '{print $2}')
-            
+          
             if [ -z "$NEW_PID" ]; then
               echo "❌ 애플리케이션 실행 실패!"
               tail -30 app.log
               exit 1
             fi
-            
+          
             echo "✅ 애플리케이션 시작 완료 (PID: $NEW_PID)"
-            
-            # 헬스 체크
+          
             echo "🏥 헬스 체크..."
             for i in {1..15}; do
               sleep 3
               HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080 2>/dev/null)
-            
+          
               if [ "$HTTP_STATUS" -eq 200 ] || [ "$HTTP_STATUS" -eq 404 ]; then
                 echo "✅ 배포 완료! (HTTP $HTTP_STATUS)"
                 exit 0
               fi
-            
+          
               echo "⏳ 대기 중... ($i/15)"
             done
-            
-            echo "⚠️ 헬스 체크 타임아웃 (애플리케이션이 시작 중일 수 있습니다)"
+          
+            echo "⚠️ 헬스 체크 타임아웃"
             tail -20 app.log
+          ENDSSH
 
-      - name: 📢 배포 결과 알림
+      - name: 🧹 SSH Key 정리
+        if: always()
+        run: rm -f ~/.ssh/id_rsa
+
+      - name: 📢 배포 결과
         if: always()
         run: |
-          if [ ${{ job.status }} == 'success' ]; then
+          if [ "${{ job.status }}" == "success" ]; then
             echo "✅ 배포 성공!"
           else
             echo "❌ 배포 실패!"
