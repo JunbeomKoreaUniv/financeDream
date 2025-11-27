@@ -37,8 +37,6 @@ jobs:
       - name: 🚀 EC2 배포
         run: |
           ssh -i ~/.ssh/id_rsa ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'ENDSSH'
-            set -e
-          
             echo "========================================="
             echo "🚀 EC2 서버 배포 시작"
             echo "========================================="
@@ -69,6 +67,11 @@ jobs:
             echo "🔨 빌드 시작..."
             ./gradlew clean build -x test
           
+            if [ $? -ne 0 ]; then
+              echo "❌ 빌드 실패!"
+              exit 1
+            fi
+          
             echo "🚀 애플리케이션 시작..."
           
             DB_URL="jdbc:mysql://${{ secrets.MYSQL_HOST }}:${{ secrets.MYSQL_PORT }}/${{ secrets.MYSQL_DB }}?serverTimezone=Asia/Seoul&characterEncoding=UTF-8"
@@ -93,30 +96,35 @@ jobs:
             echo "✅ 애플리케이션 시작 완료 (PID: $NEW_PID)"
           
             echo "🏥 헬스 체크..."
+            HEALTH_CHECK_PASSED=0
+          
             for i in {1..20}; do
               sleep 5
           
-              # 프로세스 살아있는지 확인
               if ! ps -p $NEW_PID > /dev/null; then
                 echo "❌ 프로세스가 종료되었습니다!"
                 tail -50 app.log
                 exit 1
               fi
           
-              # HTTP 상태 확인 (401도 정상으로 간주)
               HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080 2>/dev/null || echo "000")
           
               echo "[$i/20] HTTP Status: $HTTP_STATUS"
           
               if [ "$HTTP_STATUS" -eq 200 ] || [ "$HTTP_STATUS" -eq 404 ] || [ "$HTTP_STATUS" -eq 401 ]; then
                 echo "✅ 배포 완료! (HTTP $HTTP_STATUS)"
-                exit 0
+                HEALTH_CHECK_PASSED=1
+                break
               fi
             done
           
-            echo "⚠️ 헬스 체크 타임아웃"
-            echo "📋 최근 로그:"
-            tail -50 app.log
+            if [ $HEALTH_CHECK_PASSED -eq 0 ]; then
+              echo "⚠️ 헬스 체크 타임아웃"
+              tail -50 app.log
+              exit 1
+            fi
+          
+            exit 0
           ENDSSH
 
       - name: 🧹 SSH Key 정리
