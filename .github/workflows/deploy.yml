@@ -93,20 +93,30 @@ jobs:
             echo "✅ 애플리케이션 시작 완료 (PID: $NEW_PID)"
           
             echo "🏥 헬스 체크..."
-            for i in {1..15}; do
-              sleep 3
-              HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080 2>/dev/null)
+            for i in {1..20}; do
+              sleep 5
           
-              if [ "$HTTP_STATUS" -eq 200 ] || [ "$HTTP_STATUS" -eq 404 ]; then
+              # 프로세스 살아있는지 확인
+              if ! ps -p $NEW_PID > /dev/null; then
+                echo "❌ 프로세스가 종료되었습니다!"
+                tail -50 app.log
+                exit 1
+              fi
+          
+              # HTTP 상태 확인 (401도 정상으로 간주)
+              HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080 2>/dev/null || echo "000")
+          
+              echo "[$i/20] HTTP Status: $HTTP_STATUS"
+          
+              if [ "$HTTP_STATUS" -eq 200 ] || [ "$HTTP_STATUS" -eq 404 ] || [ "$HTTP_STATUS" -eq 401 ]; then
                 echo "✅ 배포 완료! (HTTP $HTTP_STATUS)"
                 exit 0
               fi
-          
-              echo "⏳ 대기 중... ($i/15)"
             done
           
             echo "⚠️ 헬스 체크 타임아웃"
-            tail -20 app.log
+            echo "📋 최근 로그:"
+            tail -50 app.log
           ENDSSH
 
       - name: 🧹 SSH Key 정리
